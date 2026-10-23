@@ -38,6 +38,21 @@ cp .env.example .env
 ```
 > **Security Notice**: `.env` and sensitive credential files are excluded by `.gitignore` and must never be committed.
 
+### Database Setup (PostgreSQL via Docker)
+TrustLedger AI uses a dedicated PostgreSQL container isolated on host port `5433` (preventing conflicts with any default port `5432` databases):
+```bash
+docker run -d --name trustledger-postgres -p 127.0.0.1:5433:5432 \
+  -e POSTGRES_USER=postgres \
+  -e POSTGRES_PASSWORD=postgres \
+  -e POSTGRES_DB=trustledger \
+  -v trustledger_pgdata:/var/lib/postgresql/data \
+  postgres:17
+
+# Apply Prisma migration to dedicated database:
+cd server
+npm run prisma:migrate
+```
+
 ### Backend Setup & Verification
 ```bash
 cd server
