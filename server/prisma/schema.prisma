@@ -1,0 +1,259 @@
+// TrustLedger AI - Prisma Schema
+// Financial reconciliation and double-entry ledger database models
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum ClientStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+}
+
+enum InvoiceStatus {
+  DRAFT
+  ISSUED
+  PAID
+  PARTIALLY_PAID
+  OVERDUE
+  CANCELLED
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
+}
+
+enum PaymentMethod {
+  PAYPAL
+  BANK_TRANSFER
+  CREDIT_CARD
+  UPI
+  MANUAL
+}
+
+enum RefundStatus {
+  PENDING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ReconciliationStatus {
+  EXACT_MATCH
+  PARTIAL_MATCH
+  OVERPAID
+  UNDERPAID
+  DISCREPANCY
+  MANUAL_REVIEW
+}
+
+enum MatchSource {
+  AUTOMATIC
+  AI_ASSISTED
+  MANUAL_OVERRIDE
+}
+
+enum LedgerAccount {
+  ACCOUNTS_RECEIVABLE
+  CASH
+  PAYPAL_CLEARING
+  REVENUE
+  REFUNDS_PAYABLE
+  PAYMENT_GATEWAY_FEES
+  SUSPENSE_DISCREPANCY
+}
+
+enum LedgerEntryType {
+  DEBIT
+  CREDIT
+}
+
+// -----------------------------------------------------------------------------
+// Models
+// Note: All monetary amounts are stored strictly as integer minor units (paise).
+// 1 INR = 100 paise. Floating-point types are strictly forbidden for currency.
+// -----------------------------------------------------------------------------
+
+model Client {
+  id        String       @id @default(uuid())
+  name      String
+  email     String       @unique
+  phone     String?
+  currency  String       @default("INR")
+  status    ClientStatus @default(ACTIVE)
+
+  invoices  Invoice[]
+  payments  Payment[]
+
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@index([email])
+  @@index([status])
+  @@map("clients")
+}
+
+model Invoice {
+  id                    String                 @id @default(uuid())
+  invoiceNumber         String                 @unique
+  clientId              String
+  client                Client                 @relation(fields: [clientId], references: [id], onDelete: Restrict)
+
+  // Monetary amounts in minor units (paise)
+  amountPaise           Int
+  paidAmountPaise       Int                    @default(0)
+  currency              String                 @default("INR")
+
+  status                InvoiceStatus          @default(ISSUED)
+  dueDate               DateTime?
+  issueDate             DateTime               @default(now())
+  notes                 String?
+
+  payments              Payment[]
+  reconciliationRecords ReconciliationRecord[]
+  ledgerEntries         LedgerEntry[]
+
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  @@index([clientId])
+  @@index([status])
+  @@index([issueDate])
+  @@map("invoices")
+}
+
+model Payment {
+  id                    String                 @id @default(uuid())
+  clientId              String?
+  client                Client?                @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  invoiceId             String?
+  invoice               Invoice?               @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+
+  // Monetary amounts in minor units (paise)
+  amountPaise           Int
+  feePaise              Int                    @default(0)
+  netAmountPaise        Int
+
+  currency              String                 @default("INR")
+  status                PaymentStatus          @default(PENDING)
+  method                PaymentMethod          @default(PAYPAL)
+
+  // External identifiers & idempotency
+  externalId            String?                @unique
+  idempotencyKey        String?                @unique
+
+  paymentDate           DateTime               @default(now())
+  metadata              Json?
+
+  refunds               Refund[]
+  reconciliationRecords ReconciliationRecord[]
+  ledgerEntries         LedgerEntry[]
+
+  createdAt             DateTime               @default(now())
+  updatedAt             DateTime               @updatedAt
+
+  @@index([clientId])
+  @@index([invoiceId])
+  @@index([status])
+  @@index([paymentDate])
+  @@index([externalId])
+  @@map("payments")
+}
+
+model Refund {
+  id             String        @id @default(uuid())
+  paymentId      String
+  payment        Payment       @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  // Monetary amount in minor units (paise)
+  amountPaise    Int
+  currency       String        @default("INR")
+
+  status         RefundStatus  @default(PENDING)
+  reason         String?
+
+  // External identifiers & idempotency
+  externalId     String?       @unique
+  idempotencyKey String?       @unique
+
+  ledgerEntries  LedgerEntry[]
+
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@index([paymentId])
+  @@index([status])
+  @@index([externalId])
+  @@map("refunds")
+}
+
+model ReconciliationRecord {
+  id                 String               @id @default(uuid())
+  invoiceId          String
+  invoice            Invoice              @relation(fields: [invoiceId], references: [id], onDelete: Restrict)
+  paymentId          String
+  payment            Payment              @relation(fields: [paymentId], references: [id], onDelete: Restrict)
+
+  // Reconciliation amounts in minor units (paise)
+  matchedAmountPaise Int
+  discrepancyPaise   Int                  @default(0)
+
+  status             ReconciliationStatus @default(EXACT_MATCH)
+  matchedBy          MatchSource          @default(AUTOMATIC)
+  confidenceScore    Float?
+  notes              String?
+  metadata           Json?
+
+  reconciledAt       DateTime             @default(now())
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  @@unique([invoiceId, paymentId])
+  @@index([invoiceId])
+  @@index([paymentId])
+  @@index([status])
+  @@index([reconciledAt])
+  @@map("reconciliation_records")
+}
+
+model LedgerEntry {
+  id               String          @id @default(uuid())
+  transactionGroup String
+  account          LedgerAccount
+  entryType        LedgerEntryType
+
+  // Amount in minor units (paise) - always positive integer
+  amountPaise      Int
+  currency         String          @default("INR")
+
+  invoiceId        String?
+  invoice          Invoice?        @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  paymentId        String?
+  payment          Payment?        @relation(fields: [paymentId], references: [id], onDelete: SetNull)
+  refundId         String?
+  refund           Refund?         @relation(fields: [refundId], references: [id], onDelete: SetNull)
+
+  description      String
+  postedAt         DateTime        @default(now())
+  createdAt        DateTime        @default(now())
+
+  @@index([transactionGroup])
+  @@index([account])
+  @@index([entryType])
+  @@index([postedAt])
+  @@map("ledger_entries")
+}
